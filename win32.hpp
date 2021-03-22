@@ -30,39 +30,65 @@ public:
 
 };
 
-template<class...Ts>
 class cancellable_sleep {
-    using duration_t = std::chrono::duration<Ts...>;
+    using ms = std::chrono::milliseconds;
     Handle event;
-    duration_t duration;
-
+    ms::rep duration_millis;
 public:
-    cancellable_sleep(const duration_t &duration) :
-            duration(duration),
-            event(CreateEventA(NULL, false, false, NULL)) {
-        if (event == NULL) {
+    template<class rep_t, class period_t>
+    cancellable_sleep(const std::chrono::duration<rep_t, period_t> &duration) :
+            duration_millis(std::chrono::duration_cast<ms>(duration).count()),
+            event(CreateEventA(nullptr, false, false, nullptr)) {
+        if (event == nullptr) {
             throw std::runtime_error("Failed to create system event backend for cancellable sleep");
         }
     }
+
+    cancellable_sleep &operator=(cancellable_sleep &&other) noexcept {
+        if (this != &other) {
+            event = std::move(other.event);
+            duration_millis = other.duration_millis;
+        }
+        return *this;
+    }
+
+    cancellable_sleep(cancellable_sleep &&other) noexcept: event(std::move(other.event)),
+                                                           duration_millis(other.duration_millis) {}
 
     /**
      * Blocking wait
      * @return whether cancelled
      */
     bool start() {
-        auto res = WaitForSingleObject(event, std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
-        return res == WAIT_OBJECT_0;
+        if (duration_millis <= 0) return false;
+//        println("Starting wait: {} - {}ms ", event.get(), duration_millis.count());
+        return WaitForSingleObject(event, duration_millis) == WAIT_OBJECT_0;
     };
 
-    void cancel() {
-        SetEvent(event);
-    }
+    /**
+     * Blocking wait
+     * @return whether cancelled
+     */
+    bool start(const std::stop_token &st) {
+        std::stop_callback cb(st, [&] { cancel(); });
+        return start();
+    };
 
-    ~cancellable_sleep() {
-        CloseHandle(event);
+    /**
+     * Idempotent cancellation
+     */
+    void cancel() {
+        println("Cancelling wait: {} of duration {}ms", event.get(), duration_millis);
+        SetEvent(event);
     }
 };
 
+
+template<class rep_t, class per_t>
+bool cancellable_sleep_for(const std::chrono::duration<rep_t, per_t> &duration, const std::stop_token &st) {
+    cancellable_sleep sleep{duration};
+    return sleep.start(st);
+}
 
 using cycle_t = int64_t;
 
@@ -77,30 +103,3 @@ cycle_t get_current_cycle() {
     QueryPerformanceCounter(&t);
     return t.QuadPart;
 }
-
-int main() {
-    std::cout << "CPU cycle period: " << cycle_period_millis << "ms" << std::endl;
-    for (size_t i = 0; i < 10; i++) {
-        cancellable_sleep sleep{std::chrono::minutes(10)};
-        cycle_t wakeup_cycle;
-
-        std::thread t([&wakeup_cycle, &sleep] {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            wakeup_cycle = get_current_cycle();
-            sleep.cancel();
-        });
-
-        if (sleep.start()) {
-            // do stuff in case we got interrupted by the event
-            auto wakeup_registered_cycle = get_current_cycle();
-            auto delta_cycles = wakeup_registered_cycle - wakeup_cycle;
-            printf("Took %.6fms (%lld cycles) to observe cancellation\n",
-                   delta_cycles * cycle_period_millis,
-                   delta_cycles);
-        }
-
-        t.join();
-    }
-    return 0;
-}
-
