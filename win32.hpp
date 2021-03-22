@@ -89,17 +89,3 @@ bool cancellable_sleep_for(const std::chrono::duration<rep_t, per_t> &duration, 
     cancellable_sleep sleep{duration};
     return sleep.start(st);
 }
-
-using cycle_t = int64_t;
-
-auto cycle_period_millis = [] {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    return 1000.0 / f.QuadPart;
-}();
-
-cycle_t get_current_cycle() {
-    LARGE_INTEGER t;
-    QueryPerformanceCounter(&t);
-    return t.QuadPart;
-}
